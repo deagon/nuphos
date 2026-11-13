@@ -18,6 +18,7 @@ import { test } from 'node:test'
 import {
   claudeHomeSettings,
   hardLinkFrom,
+  ownerClaudeSettingsPath,
   podOwnerAgentHome,
   prepareAgentHome,
   prepareClaudeHome,
@@ -161,7 +162,7 @@ test('the prepared home holds only Nuphos’s own settings, readable by the owne
     rmSync(userDir, { recursive: true, force: true })
   })
   const workspace = path.join(userDir, 'workspace')
-  const home = prepareClaudeHome(userDir, workspace)
+  const home = prepareClaudeHome(userDir, workspace, path.join(userDir, 'no-owner-settings.json'))
 
   assert.equal(home, path.join(userDir, 'claude-home'))
   assert.deepEqual(
@@ -171,25 +172,106 @@ test('the prepared home holds only Nuphos’s own settings, readable by the owne
   if (process.platform !== 'win32') assert.equal(statSync(home).mode & 0o777, 0o700)
 })
 
-test('rewriting the prepared home keeps the API key the agent signed in with, and only that', (t) => {
+test('rewriting the prepared home keeps the proxy env the agent signed in with, and only that', (t) => {
   const userDir = mkdtempSync(path.join(os.tmpdir(), 'claude-home-'))
 
   t.after(() => {
     rmSync(userDir, { recursive: true, force: true })
   })
   const workspace = path.join(userDir, 'workspace')
-  const home = prepareClaudeHome(userDir, workspace)
+  const noOwner = path.join(userDir, 'no-owner-settings.json')
+  const home = prepareClaudeHome(userDir, workspace, noOwner)
 
   assert.ok(home)
   writeFileSync(
     path.join(home, 'settings.json'),
-    JSON.stringify({ hooks: {}, env: { ANTHROPIC_API_KEY: 'sk-ant-kept', OTHER: 'dropped' } }),
+    JSON.stringify({
+      hooks: {},
+      env: {
+        ANTHROPIC_API_KEY: 'sk-ant-kept',
+        ANTHROPIC_BASE_URL: 'https://proxy.example/v1',
+        ANTHROPIC_AUTH_TOKEN: 'token-kept',
+        OTHER: 'dropped',
+      },
+    }),
   )
-  prepareClaudeHome(userDir, workspace)
+  prepareClaudeHome(userDir, workspace, noOwner)
   assert.deepEqual(JSON.parse(readFileSync(path.join(home, 'settings.json'), 'utf8')), {
     ...claudeHomeSettings(workspace),
-    env: { ANTHROPIC_API_KEY: 'sk-ant-kept' },
+    env: {
+      ANTHROPIC_API_KEY: 'sk-ant-kept',
+      ANTHROPIC_BASE_URL: 'https://proxy.example/v1',
+      ANTHROPIC_AUTH_TOKEN: 'token-kept',
+    },
   })
+})
+
+test("prepareClaudeHome syncs the owner's proxy env and keeps isolated-only keys", (t) => {
+  const userDir = mkdtempSync(path.join(os.tmpdir(), 'claude-home-'))
+
+  t.after(() => {
+    rmSync(userDir, { recursive: true, force: true })
+  })
+  const workspace = path.join(userDir, 'workspace')
+  const ownerSettings = path.join(userDir, 'owner-settings.json')
+  writeFileSync(
+    ownerSettings,
+    JSON.stringify({
+      hooks: { shouldStayOut: true },
+      env: {
+        ANTHROPIC_API_KEY: 'sk-ant-owner',
+        ANTHROPIC_BASE_URL: 'https://gateway.example/v1',
+        ANTHROPIC_AUTH_TOKEN: 'owner-token',
+        OTHER: 'ignored',
+      },
+    }),
+  )
+  const home = prepareClaudeHome(userDir, workspace, ownerSettings)
+
+  assert.ok(home)
+  assert.deepEqual(JSON.parse(readFileSync(path.join(home, 'settings.json'), 'utf8')), {
+    ...claudeHomeSettings(workspace),
+    env: {
+      ANTHROPIC_API_KEY: 'sk-ant-owner',
+      ANTHROPIC_BASE_URL: 'https://gateway.example/v1',
+      ANTHROPIC_AUTH_TOKEN: 'owner-token',
+    },
+  })
+
+  writeFileSync(
+    path.join(home, 'settings.json'),
+    JSON.stringify({
+      env: {
+        ANTHROPIC_API_KEY: 'sk-ant-isolated',
+        ANTHROPIC_AUTH_TOKEN: 'isolated-only-kept',
+      },
+    }),
+  )
+  writeFileSync(
+    ownerSettings,
+    JSON.stringify({
+      env: {
+        ANTHROPIC_API_KEY: 'sk-ant-owner',
+        ANTHROPIC_BASE_URL: 'https://gateway.example/v1',
+      },
+    }),
+  )
+  prepareClaudeHome(userDir, workspace, ownerSettings)
+  assert.deepEqual(JSON.parse(readFileSync(path.join(home, 'settings.json'), 'utf8')), {
+    ...claudeHomeSettings(workspace),
+    env: {
+      ANTHROPIC_API_KEY: 'sk-ant-owner',
+      ANTHROPIC_BASE_URL: 'https://gateway.example/v1',
+      ANTHROPIC_AUTH_TOKEN: 'isolated-only-kept',
+    },
+  })
+})
+
+test("ownerClaudeSettingsPath points at the owner's ~/.claude/settings.json", () => {
+  assert.equal(
+    ownerClaudeSettingsPath('/Users/demo'),
+    path.join('/Users/demo', '.claude', 'settings.json'),
+  )
 })
 
 test('the runtime links the same custom CODEX_HOME used by local login', (t) => {

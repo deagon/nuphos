@@ -182,35 +182,69 @@ export function claudeHomeSettings(workspace: string): Record<string, unknown> {
   }
 }
 
-/** The API key this agent was signed in with (claude-login.mjs), which a rewrite keeps. */
-function apiKeyEnv(file: string): { env?: { ANTHROPIC_API_KEY: string } } {
-  try {
-    const key = (
-      JSON.parse(readFileSync(file, 'utf8')) as { env?: { ANTHROPIC_API_KEY?: unknown } }
-    ).env?.ANTHROPIC_API_KEY
+/**
+ * Proxy / login env copied into the isolated Claude home. Hooks, plugins, skills,
+ * MCP servers and CLAUDE.md stay out; these keys are what a settings.json proxy
+ * needs so Nuphos can use the owner's already-working Claude Code setup.
+ */
+export const CLAUDE_PROXY_ENV_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+] as const
 
-    return typeof key === 'string' && key ? { env: { ANTHROPIC_API_KEY: key } } : {}
+export type ClaudeProxyEnv = Partial<Record<(typeof CLAUDE_PROXY_ENV_KEYS)[number], string>>
+
+/** The owner's Claude Code settings, never the isolated CLAUDE_CONFIG_DIR. */
+export function ownerClaudeSettingsPath(home = os.homedir()): string {
+  return path.join(home, '.claude', 'settings.json')
+}
+
+function readProxyEnv(file: string): ClaudeProxyEnv {
+  try {
+    const env = (JSON.parse(readFileSync(file, 'utf8')) as { env?: Record<string, unknown> }).env
+    const out: ClaudeProxyEnv = {}
+
+    for (const key of CLAUDE_PROXY_ENV_KEYS) {
+      const value = env?.[key]
+
+      if (typeof value === 'string' && value) out[key] = value
+    }
+
+    return out
   } catch {
     return {}
   }
 }
 
+function proxyEnvBlock(env: ClaudeProxyEnv): { env?: ClaudeProxyEnv } {
+  return Object.keys(env).length > 0 ? { env } : {}
+}
+
 /**
  * A CLAUDE_CONFIG_DIR of Nuphos's own, so Claude Code serving Nuphos never
- * loads the owner's settings, hooks, plugins, skills, MCP servers or
- * CLAUDE.md. On macOS the login uses the terminal Keychain independently of
- * this directory; other platforms keep their existing file-backed login.
+ * loads the owner's hooks, plugins, skills, MCP servers or CLAUDE.md. It does
+ * sync ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN from the
+ * owner's ~/.claude/settings.json, and keeps those keys when this home is
+ * rewritten. Owner values win on conflict; isolated-only keys are kept.
+ * On macOS the official OAuth login still uses the terminal Keychain
+ * independently of this directory; other platforms keep their file-backed login.
  */
-export function prepareClaudeHome(userDir: string, workspace: string): string | undefined {
+export function prepareClaudeHome(
+  userDir: string,
+  workspace: string,
+  ownerSettings = ownerClaudeSettingsPath(),
+): string | undefined {
   const home = path.join(userDir, 'claude-home')
 
   try {
     mkdirSync(home, { recursive: true, mode: 0o700 })
     const file = path.join(home, 'settings.json')
+    const env = { ...readProxyEnv(file), ...readProxyEnv(ownerSettings) }
 
     writeFileSync(
       file,
-      `${JSON.stringify({ ...claudeHomeSettings(workspace), ...apiKeyEnv(file) }, null, 2)}\n`,
+      `${JSON.stringify({ ...claudeHomeSettings(workspace), ...proxyEnvBlock(env) }, null, 2)}\n`,
       { mode: 0o600 },
     )
 

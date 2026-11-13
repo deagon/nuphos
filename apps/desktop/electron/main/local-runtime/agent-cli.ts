@@ -109,13 +109,18 @@ async function claudeLogin(
     ? await readJson(path.join(env.CLAUDE_CONFIG_DIR, '.claude.json'))
     : null
   const email = (config?.oauthAccount as { emailAddress?: unknown } | undefined)?.emailAddress
-  // A key in its own settings outranks the account sign-in (claude-login.mjs puts it there).
+  // A key or auth token in its own settings outranks the account sign-in
+  // (claude-login.mjs puts an API key there; a settings.json proxy may use either).
   const settings = env.CLAUDE_CONFIG_DIR
     ? await readJson(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'))
     : null
-  const key = (settings?.env as { ANTHROPIC_API_KEY?: unknown } | undefined)?.ANTHROPIC_API_KEY
+  const proxy = settings?.env as
+    { ANTHROPIC_API_KEY?: unknown; ANTHROPIC_AUTH_TOKEN?: unknown } | undefined
+  const key = proxy?.ANTHROPIC_API_KEY
+  const token = proxy?.ANTHROPIC_AUTH_TOKEN
 
-  if (typeof key === 'string' && key) return { loggedIn: true, apiKey: true }
+  if ((typeof key === 'string' && key) || (typeof token === 'string' && token))
+    return { loggedIn: true, apiKey: true }
 
   return {
     loggedIn: Boolean(oauth?.accessToken || oauth?.refreshToken),
